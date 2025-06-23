@@ -4,3 +4,6 @@ Todo
 /jeju_data
 /figures
 /figure
+/graph
+*.pkl
+*.html
