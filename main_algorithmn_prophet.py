@@ -23,6 +23,7 @@ def process_and_prepare_master_data(input_df: pd.DataFrame, today_date: datetime
     df = input_df.copy()
     df['일시'] = pd.to_datetime(df['일시'])
     
+    # 학습 데이터는 '오늘' 이전의 모든 데이터를 포함합니다.
     df = df[df['일시'] < datetime.combine(today_date, datetime.min.time())]
     print(f"-> {today_date} 이전 데이터만 사용. (총 {len(df)}개)")
 
@@ -55,47 +56,61 @@ def process_and_prepare_master_data(input_df: pd.DataFrame, today_date: datetime
     print("===== 1단계: 데이터 준비 완료 =====")
     return master_datasets
 
-def train_and_predict_prophet(df_master_daily: pd.DataFrame, freq_unit: str = 'D', periods: int = 7) -> Tuple[pd.DataFrame, Prophet, pd.DataFrame, pd.DataFrame]:
+def train_and_predict_prophet(df_master_daily: pd.DataFrame, today_date: datetime.date, freq_unit: str = 'D', periods: int = 7) -> Tuple[pd.DataFrame, Prophet, pd.DataFrame, pd.DataFrame]:
     """
     2단계: Prophet 모델 예측 실행 (Prediction Execution with Prophet)
-    시각화를 위해 학습된 모델 객체와 전체 예측 결과(forecast)도 함께 반환합니다.
+    [수정] 데이터의 마지막 날짜와 상관없이, '오늘'을 기준으로 미래를 예측하도록 로직을 수정합니다.
     """
-    df_to_process = df_master_daily.copy()
-    df_to_process.set_index('ds', inplace=True)
+    # 1. 학습 데이터의 시작일부터 "어제"까지의 전체 기간을 정의합니다.
+    #    이렇게 하면 데이터가 중간에 끊겼더라도 모델이 그 공백 기간을 인지하게 됩니다.
+    start_date = df_master_daily['ds'].min()
+    end_date = today_date - timedelta(days=1)
+    
+    # [수정] Pandas Timestamp와 datetime.date 객체 비교 오류 해결
+    if start_date.date() > end_date:
+        print("!!! 경고: 학습 데이터가 '오늘' 이후에만 존재하여 예측을 건너뜁니다.")
+        return pd.DataFrame(), None, None, None
+
+    full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+    history_df = pd.DataFrame(full_date_range, columns=['ds'])
+    
+    # 전체 기간에 실제 마스터 데이터를 합칩니다. 데이터가 없는 날은 'y'값이 NaN이 됩니다.
+    df_padded = pd.merge(history_df, df_master_daily, on='ds', how='left')
+    
+    # 2. 예측 단위별 데이터 리샘플링 및 필터링
+    df_to_process = df_padded.copy().set_index('ds')
     
     if freq_unit == 'D':
         df_resampled = df_to_process.resample('D').median()
     elif freq_unit == 'W':
         df_resampled = df_to_process.resample('W-MON').median()
-        df_resampled.drop(df_resampled.tail(1).index, inplace=True)
-        print("-> 주별 예측: 불완전한 마지막 주 데이터를 학습에서 제외했습니다.")
     elif freq_unit == 'M':
         df_resampled = df_to_process.resample('MS').median()
-        df_resampled.drop(df_resampled.tail(1).index, inplace=True)
-        print("-> 월별 예측: 불완전한 마지막 달 데이터를 학습에서 제외했습니다.")
     else:
         raise ValueError("freq_unit은 반드시 'D', 'W', 'M' 중 하나여야 합니다.")
-        
+    
+    # Prophet은 학습 데이터의 y값이 NaN이어도 괜찮으므로, dropna는 reset_index 후에 수행합니다.
     df_resampled.reset_index(inplace=True)
-    df_resampled.dropna(inplace=True)
 
-    if len(df_resampled) < 15:
-        print(f"!!! 경고: 학습 데이터가 {len(df_resampled)}개로 너무 적어 예측을 건너뜁니다.")
+    if len(df_resampled.dropna()) < 15: # 실제 데이터 포인트가 너무 적으면 예측하지 않음
+        print(f"!!! 경고: 실제 학습 데이터가 {len(df_resampled.dropna())}개로 너무 적어 예측을 건너뜁니다.")
         return pd.DataFrame(), None, None, None
 
+    # 3. Prophet 모델 학습
     model = Prophet()
     model.fit(df_resampled)
+
+    # 4. 미래 예측 (7개 기간)
+    # 이제 모델의 학습 데이터 마지막 날짜는 '어제'이므로, 미래 예측은 '오늘'부터 시작됩니다.
     future = model.make_future_dataframe(periods=periods, freq=freq_unit)
     forecast = model.predict(future)
 
+    # 5. 결과 추출 및 반환
     result = forecast.tail(periods)[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-    result.rename(columns={
-        'ds' : '예측시점',
-        'yhat': '예측온도',
-        'yhat_lower': '불확실성_최저',
-        'yhat_upper': '불확실성_최고'
-    }, inplace=True)
+    result.rename(columns={'ds' : '예측시점', 'yhat': '예측온도', 'yhat_lower': '불확실성_최저', 'yhat_upper': '불확실성_최고'}, inplace=True)
     
+    # df_resampled는 실제 값만 있는 원본 리샘플링 데이터로 재정의하여 시각화에 사용
+    df_resampled.dropna(inplace=True)
     return result, model, forecast, df_resampled
 
 def run_aquaculture_forecast_pipeline(
@@ -107,17 +122,6 @@ def run_aquaculture_forecast_pipeline(
 ) -> pd.DataFrame:
     """
     데이터 정제부터 Prophet 모델 기반 주기별 예측까지 전체 파이프라인을 실행합니다.
-    [수정] 특정 시설에 대한 시각화 그래프를 파일로 저장하는 기능을 선택적으로 실행합니다.
-    
-    Args:
-        raw_df (pd.DataFrame): 원본 데이터.
-        units_to_run (List[str]): 예측을 실행할 단위 리스트.
-        visualize_for_facility (str, optional): 그래프를 생성할 대상 시설 코드. Defaults to None.
-        visualize_units (List[str], optional): 시각화할 예측 단위. Defaults to ['D'].
-        save_graph_path (str, optional): 그래프를 저장할 최상위 폴더 경로. Defaults to 'graph'.
-
-    Returns:
-        pd.DataFrame: 모든 시설과 예측단위에 대한 통합 예측 결과.
     """
     today = datetime.now().date()
     all_forecast_results = []
@@ -139,7 +143,8 @@ def run_aquaculture_forecast_pipeline(
                 
                 print(f"--- {name_ko} 단위 예측 (향후 7{name_ko}) ---")
                 try:
-                    forecast_result, model, forecast_df, df_resampled = train_and_predict_prophet(df_master, freq_unit=freq, periods=7)
+                    # [수정] today 변수를 예측 함수에 전달합니다.
+                    forecast_result, model, forecast_df, df_resampled = train_and_predict_prophet(df_master, today, freq_unit=freq, periods=7)
                     
                     if not forecast_result.empty:
                         forecast_result['시설코드'] = facility_code
@@ -149,7 +154,6 @@ def run_aquaculture_forecast_pipeline(
                         if facility_code == visualize_for_facility and freq in visualize_units:
                             print(f"--- '{facility_code}' ({name_ko} 단위) 그래프 생성 및 저장 중 ---")
                             
-                            # 그래프 저장을 위한 폴더 생성
                             target_folder = os.path.join(save_graph_path, facility_code)
                             os.makedirs(target_folder, exist_ok=True)
                             
@@ -159,8 +163,7 @@ def run_aquaculture_forecast_pipeline(
                             ax1.set_title(f"[{facility_code}] Master Water Temperature Data")
                             ax1.set_xlabel("Date"); ax1.set_ylabel("Temperature (℃)")
                             plt.legend(); plt.tight_layout()
-                            plt.savefig(os.path.join(target_folder, f"1_master_data.png"))
-                            plt.close(fig1)
+                            plt.savefig(os.path.join(target_folder, f"1_master_data.png")); plt.close(fig1)
                             
                             # 그래프 2: 모델 학습 결과 및 전체 추세선 저장
                             fig_fit, ax_fit = plt.subplots(figsize=(12, 6))
@@ -173,13 +176,11 @@ def run_aquaculture_forecast_pipeline(
                             ax_fit.set_title(f"[{facility_code}] Model Fit and Full Trendline")
                             ax_fit.set_xlabel("Date"); ax_fit.set_ylabel("Temperature (℃)")
                             ax_fit.legend(); ax_fit.grid(True, linestyle='--', alpha=0.6)
-                            plt.tight_layout()
-                            plt.savefig(os.path.join(target_folder, f"2_{freq}_model_fit.png"))
-                            plt.close(fig_fit)
+                            plt.tight_layout(); plt.savefig(os.path.join(target_folder, f"2_{freq}_model_fit.png")); plt.close(fig_fit)
 
                             # 그래프 3: 미래 예측 구간 그래프 저장
                             fig2, ax2 = plt.subplots(figsize=(12, 6))
-                            future_forecast_df = forecast_df[forecast_df['ds'] > df_resampled['ds'].max()]
+                            future_forecast_df = forecast_df[forecast_df['ds'] >= datetime.combine(today, datetime.min.time())]
                             ax2.plot(future_forecast_df['ds'], future_forecast_df['yhat'], ls='--', marker='o', color='dodgerblue', label='Forecasted Temperature')
                             ax2.fill_between(
                                 future_forecast_df['ds'], future_forecast_df['yhat_lower'], future_forecast_df['yhat_upper'],
@@ -188,17 +189,13 @@ def run_aquaculture_forecast_pipeline(
                             ax2.set_title(f"[{facility_code}] Future Forecast for next 7 {name_en}s")
                             ax2.set_xlabel("Date"); ax2.set_ylabel("Temperature (℃)")
                             ax2.legend(); ax2.grid(True, linestyle='--', alpha=0.6)
-                            fig2.autofmt_xdate()
-                            plt.tight_layout()
-                            plt.savefig(os.path.join(target_folder, f"3_{freq}_future_forecast.png"))
-                            plt.close(fig2)
+                            fig2.autofmt_xdate(); plt.tight_layout()
+                            plt.savefig(os.path.join(target_folder, f"3_{freq}_future_forecast.png")); plt.close(fig2)
 
                             # 그래프 4: 패턴 분석 그래프 저장
                             fig3 = model.plot_components(forecast_df)
                             fig3.suptitle(f"[{facility_code}] Data Pattern Analysis", y=1.02)
-                            plt.tight_layout()
-                            plt.savefig(os.path.join(target_folder, f"4_{freq}_components.png"))
-                            plt.close(fig3)
+                            plt.tight_layout(); plt.savefig(os.path.join(target_folder, f"4_{freq}_components.png")); plt.close(fig3)
                             print(f"-> '{target_folder}'에 그래프 4종 저장 완료.")
                     
                 except Exception as e:
@@ -302,7 +299,7 @@ if __name__ == "__main__":
     print("\n\n>>> 1. 특정 시설 그래프를 포함하여 파이프라인 실행")
     final_df_with_viz = run_aquaculture_forecast_pipeline(
         raw_df, 
-        units_to_run=['D', 'W'], 
+        units_to_run=['D'], 
         visualize_for_facility='64AF1',
         visualize_units=['D']
     )
