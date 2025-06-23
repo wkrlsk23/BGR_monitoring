@@ -310,7 +310,8 @@ if __name__ == "__main__":
             
     # 예시 2: 시각화 없이 예측 결과만 생성
     print("\n\n>>> 2. 시각화 없이 예측만 실행")
-    final_df_only = run_aquaculture_forecast_pipeline(raw_df)
+    unit = 'D'  # 예측 단위: 'D', 'W', 'ME' 중 하나
+    final_df_only = run_aquaculture_forecast_pipeline(raw_df, units_to_run=[unit])
     if not final_df_only.empty:
         print("\n\n===== 최종 통합 예측 결과 =====")
         with pd.option_context('display.float_format', '{:,.2f}'.format):
