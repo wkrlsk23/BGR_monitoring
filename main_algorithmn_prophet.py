@@ -84,10 +84,10 @@ def train_and_predict_prophet(df_master_daily: pd.DataFrame, today_date: datetim
         df_resampled = df_to_process.resample('D').median()
     elif freq_unit == 'W':
         df_resampled = df_to_process.resample('W-MON').median()
-    elif freq_unit == 'M':
+    elif freq_unit == 'ME':
         df_resampled = df_to_process.resample('MS').median()
     else:
-        raise ValueError("freq_unit은 반드시 'D', 'W', 'M' 중 하나여야 합니다.")
+        raise ValueError("freq_unit은 반드시 'D', 'W', 'ME' 중 하나여야 합니다.")
     
     # Prophet은 학습 데이터의 y값이 NaN이어도 괜찮으므로, dropna는 reset_index 후에 수행합니다.
     df_resampled.reset_index(inplace=True)
@@ -115,7 +115,7 @@ def train_and_predict_prophet(df_master_daily: pd.DataFrame, today_date: datetim
 
 def run_aquaculture_forecast_pipeline(
     raw_df: pd.DataFrame, 
-    units_to_run: List[str] = ['D', 'W', 'M'],
+    units_to_run: List[str] = ['D', 'W', 'ME'],
     visualize_for_facility: str = None,
     visualize_units: List[str] = ['D'],
     save_graph_path: str = 'graph'
@@ -125,8 +125,8 @@ def run_aquaculture_forecast_pipeline(
     """
     today = datetime.now().date()
     all_forecast_results = []
-    UNIT_MAP_KO = {'D': '일', 'W': '주', 'M': '월'} 
-    UNIT_MAP_EN = {'D': 'Day', 'W': 'Week', 'M': 'Month'}
+    UNIT_MAP_KO = {'D': '일', 'W': '주', 'ME': '월'} 
+    UNIT_MAP_EN = {'D': 'Day', 'W': 'Week', 'ME': 'Month'}
 
     try:
         master_datasets = process_and_prepare_master_data(raw_df, today)
