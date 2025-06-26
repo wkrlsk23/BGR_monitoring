@@ -7,3 +7,6 @@ Todo
 /graph
 *.pkl
 *.html
+/lab_folder
+raw_data.csv
+forecast_results.json

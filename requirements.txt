@@ -1,8 +1,0 @@
-pandas
-scipy
-statsmodels
-#lightgbm
-scikit-learn
-seaborn
-prophet
-ipywidgets
